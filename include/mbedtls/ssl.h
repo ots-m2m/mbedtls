@@ -264,6 +264,7 @@
 #define MBEDTLS_SSL_MSG_ALERT                  21
 #define MBEDTLS_SSL_MSG_HANDSHAKE              22
 #define MBEDTLS_SSL_MSG_APPLICATION_DATA       23
+#define MBEDTLS_SSL_CONNECTION_ID              25
 
 #define MBEDTLS_SSL_ALERT_LEVEL_WARNING         1
 #define MBEDTLS_SSL_ALERT_LEVEL_FATAL           2
@@ -333,6 +334,8 @@
 
 #define MBEDTLS_TLS_EXT_ENCRYPT_THEN_MAC            22 /* 0x16 */
 #define MBEDTLS_TLS_EXT_EXTENDED_MASTER_SECRET  0x0017 /* 23 */
+
+#define MBEDTLS_TLS_EXT_CONNECTION_ID               255
 
 #define MBEDTLS_TLS_EXT_SESSION_TICKET              35
 
@@ -748,6 +751,7 @@ struct mbedtls_ssl_context
      */
     unsigned char *out_buf;     /*!< output buffer                    */
     unsigned char *out_ctr;     /*!< 64-bit outgoing message counter  */
+    unsigned char *out_cid;     /*!< up to 64-bit outgoing connection id  */
     unsigned char *out_hdr;     /*!< start of record header           */
     unsigned char *out_len;     /*!< two-bytes message length field   */
     unsigned char *out_iv;      /*!< ivlen-byte IV                    */
@@ -799,6 +803,11 @@ struct mbedtls_ssl_context
     size_t verify_data_len;             /*!<  length of verify data stored   */
     char own_verify_data[MBEDTLS_SSL_VERIFY_DATA_MAX_LEN]; /*!<  previous handshake verify data */
     char peer_verify_data[MBEDTLS_SSL_VERIFY_DATA_MAX_LEN]; /*!<  previous handshake verify data */
+#endif
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    size_t connection_id_length;
+    char connection_id[8];
 #endif
 };
 

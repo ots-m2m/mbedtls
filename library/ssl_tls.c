@@ -1348,7 +1348,8 @@ static int ssl_encrypt_buf( mbedtls_ssl_context *ssl )
         int ret;
         size_t enc_msglen, olen;
         unsigned char *enc_msg;
-        unsigned char add_data[13];
+        unsigned char add_data[13 + 8 + 1/*CID*/];
+
         unsigned char taglen = ssl->transform_out->ciphersuite_info->flags &
                                MBEDTLS_CIPHERSUITE_SHORT_TAG ? 8 : 16;
 
@@ -1356,11 +1357,22 @@ static int ssl_encrypt_buf( mbedtls_ssl_context *ssl )
         add_data[8]  = ssl->out_msgtype;
         mbedtls_ssl_write_version( ssl->major_ver, ssl->minor_ver,
                            ssl->conf->transport, add_data + 9 );
-        add_data[11] = ( ssl->out_msglen >> 8 ) & 0xFF;
-        add_data[12] = ssl->out_msglen & 0xFF;
+
+        int cid_len = 0;
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        if (ssl->out_msgtype == MBEDTLS_SSL_CONNECTION_ID)
+        {
+            cid_len = ssl->connection_id_length + 1;
+            add_data[11] = ssl->connection_id_length;
+            memcpy( &add_data[12], ssl->out_cid, ssl->connection_id_length);
+          
+        }
+#endif
+        add_data[11 + cid_len] = ( ssl->out_msglen >> 8 ) & 0xFF;
+        add_data[12 + cid_len] = ssl->out_msglen & 0xFF;
 
         MBEDTLS_SSL_DEBUG_BUF( 4, "additional data used for AEAD",
-                       add_data, 13 );
+                       add_data, 13 + cid_len );
 
         /*
          * Generate IV
@@ -1386,6 +1398,7 @@ static int ssl_encrypt_buf( mbedtls_ssl_context *ssl )
         memcpy( ssl->transform_out->iv_enc + ssl->transform_out->fixed_ivlen,
                              ssl->out_ctr, 8 );
         memcpy( ssl->out_iv, ssl->out_ctr, 8 );
+
 #endif
 
         MBEDTLS_SSL_DEBUG_BUF( 4, "IV used", ssl->out_iv,
@@ -1409,7 +1422,7 @@ static int ssl_encrypt_buf( mbedtls_ssl_context *ssl )
         if( ( ret = mbedtls_cipher_auth_encrypt( &ssl->transform_out->cipher_ctx_enc,
                                          ssl->transform_out->iv_enc,
                                          ssl->transform_out->ivlen,
-                                         add_data, 13,
+                                         add_data, 13 + cid_len,
                                          enc_msg, enc_msglen,
                                          enc_msg, &olen,
                                          enc_msg + enc_msglen, taglen ) ) != 0 )
@@ -2732,6 +2745,8 @@ int mbedtls_ssl_write_record( mbedtls_ssl_context *ssl )
          *      uint16 message_seq;
          *      uint24 fragment_offset;
          *      uint24 fragment_length;
+         *      uint8  connection_id
+         *      uint8[] connection id bytes
          */
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
         if( ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM )
@@ -2757,6 +2772,8 @@ int mbedtls_ssl_write_record( mbedtls_ssl_context *ssl )
             /* We don't fragment, so frag_offset = 0 and frag_len = len */
             memset( ssl->out_msg + 6, 0x00, 3 );
             memcpy( ssl->out_msg + 9, ssl->out_msg + 1, 3 );
+
+
         }
 #endif /* MBEDTLS_SSL_PROTO_DTLS */
 
@@ -2812,6 +2829,43 @@ int mbedtls_ssl_write_record( mbedtls_ssl_context *ssl )
 #endif /* MBEDTLS_SSL_HW_RECORD_ACCEL */
     if( !done )
     {
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        if ((ssl->out_msgtype == MBEDTLS_SSL_MSG_APPLICATION_DATA ) && 
+            (ssl->connection_id_length != 0))
+        {
+            static bool has_updated_cid_buffers = false;
+            if (!has_updated_cid_buffers)
+            {
+                //make space for the connection id
+                memmove(ssl->out_msg + ssl->connection_id_length, ssl->out_msg, len);
+              
+                ssl->out_cid = ssl->out_buf + 11;
+                ssl->out_len = ssl->out_buf + 11 + ssl->connection_id_length;
+                ssl->out_iv  = ssl->out_buf + 13 + ssl->connection_id_length;
+                ssl->out_msg = ssl->out_buf + 13 + ssl->connection_id_length;
+
+                if( ssl->transform_out != NULL &&
+                    ssl->minor_ver >= MBEDTLS_SSL_MINOR_VERSION_2 )
+                {
+                    ssl->out_msg = ssl->out_iv + ssl->transform_out->ivlen -
+                                                 ssl->transform_out->fixed_ivlen;
+
+                }
+                has_updated_cid_buffers = true;
+            }
+
+            //add in the innertype to the end of the message
+            // see https://datatracker.ietf.org/doc/draft-ietf-tls-dtls-connection-id/?include_text=1
+            // section 5.
+            len += 1;
+            ssl->out_msglen += 1;
+            ssl->out_msg[len - 1] = ssl->out_msgtype;
+            ssl->out_msgtype = MBEDTLS_SSL_CONNECTION_ID;
+            
+            memcpy(ssl->out_cid, ssl->connection_id, ssl->connection_id_length);
+        }
+#endif
+
         ssl->out_hdr[0] = (unsigned char) ssl->out_msgtype;
         mbedtls_ssl_write_version( ssl->major_ver, ssl->minor_ver,
                            ssl->conf->transport, ssl->out_hdr + 1 );
@@ -2843,7 +2897,22 @@ int mbedtls_ssl_write_record( mbedtls_ssl_context *ssl )
                        ssl->out_hdr, mbedtls_ssl_hdr_len( ssl ) + ssl->out_msglen );
     }
 
-    if( ( ret = mbedtls_ssl_flush_output( ssl ) ) != 0 )
+    ret = mbedtls_ssl_flush_output( ssl );
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    if ((ssl->out_msgtype == MBEDTLS_SSL_CONNECTION_ID) && 
+        (ssl->connection_id_length != 0))
+    {
+        //mbedtls_ssl_hdr_len uses the out_msgtype to determine
+        //if it needs to add in the connection id, however, 
+        //mbedtls_ssl_hdr_len is also used on recieve so after we
+        //send a message set this back so that the mbedtls_ssl_hdr_len
+        //will retun the correct value for subsequent messages.
+        ssl->out_msgtype = MBEDTLS_SSL_MSG_APPLICATION_DATA;
+    }
+#endif
+
+    if (ret  != 0 )
     {
         MBEDTLS_SSL_DEBUG_RET( 1, "mbedtls_ssl_flush_output", ret );
         return( ret );
@@ -3095,7 +3164,7 @@ static int ssl_prepare_handshake_record( mbedtls_ssl_context *ssl )
     {
         int ret;
         unsigned int recv_msg_seq = ( ssl->in_msg[4] << 8 ) | ssl->in_msg[5];
-
+MBEDTLS_SSL_DEBUG_MSG( 2, ( "recv_msg_seq = %d", recv_msg_seq) );
         /* ssl->handshake is NULL when receiving ClientHello for renego */
         if( ssl->handshake != NULL &&
             recv_msg_seq != ssl->handshake->in_msg_seq )
@@ -5632,6 +5701,7 @@ void mbedtls_ssl_conf_dbg( mbedtls_ssl_config *conf,
                   void (*f_dbg)(void *, int, const char *, int, const char *),
                   void  *p_dbg )
 {
+
     conf->f_dbg      = f_dbg;
     conf->p_dbg      = p_dbg;
 }
@@ -6819,7 +6889,9 @@ static int ssl_write_real( mbedtls_ssl_context *ssl,
     else
     {
         ssl->out_msglen  = len;
+
         ssl->out_msgtype = MBEDTLS_SSL_MSG_APPLICATION_DATA;
+        
         memcpy( ssl->out_msg, buf, len );
 
         if( ( ret = mbedtls_ssl_write_record( ssl ) ) != 0 )

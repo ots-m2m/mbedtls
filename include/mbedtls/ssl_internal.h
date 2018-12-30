@@ -454,7 +454,14 @@ static inline size_t mbedtls_ssl_hdr_len( const mbedtls_ssl_context *ssl )
 {
 #if defined(MBEDTLS_SSL_PROTO_DTLS)
     if( ssl->conf->transport == MBEDTLS_SSL_TRANSPORT_DATAGRAM )
+    {
+        if ((ssl->out_msgtype == MBEDTLS_SSL_CONNECTION_ID) && 
+            (ssl->connection_id_length != 0))
+        {
+             return ( 13 + ssl->connection_id_length);
+        }
         return( 13 );
+    }
 #else
     ((void) ssl);
 #endif

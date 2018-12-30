@@ -146,7 +146,9 @@ void mbedtls_debug_print_buf( const mbedtls_ssl_context *ssl, int level,
     size_t i, idx = 0;
 
     if( ssl->conf == NULL || ssl->conf->f_dbg == NULL || level > debug_threshold )
+    {
         return;
+    }
 
     mbedtls_snprintf( str + idx, sizeof( str ) - idx, "dumping '%s' (%u bytes)\n",
               text, (unsigned int) len );

@@ -626,6 +626,49 @@ static void ssl_write_extended_ms_ext( mbedtls_ssl_context *ssl,
 }
 #endif /* MBEDTLS_SSL_EXTENDED_MASTER_SECRET */
 
+
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+static void ssl_write_connection_id_ext( mbedtls_ssl_context *ssl,
+                                          unsigned char *buf, size_t *olen )
+{
+    uint64_t cid = 0;
+    unsigned char *p = buf;
+    const unsigned char *end = ssl->out_msg + MBEDTLS_SSL_MAX_CONTENT_LEN;
+    size_t cid_len = 0; //0 length tells the server we want it to assign a connection ID 
+                        //but we don't need it to use a connection id when talking back
+
+    *olen = 0;
+
+    MBEDTLS_SSL_DEBUG_MSG( 3, ( "client hello, adding connection ID extension" ) );
+
+    if( end < p || (size_t)( end - p ) < 4 + cid_len + 1 )
+    {
+        MBEDTLS_SSL_DEBUG_MSG( 1, ( "buffer too small" ) );
+        return;
+    }
+
+    *p++ = (unsigned char)( ( MBEDTLS_TLS_EXT_CONNECTION_ID >> 8 ) & 0xFF );
+    *p++ = (unsigned char)( ( MBEDTLS_TLS_EXT_CONNECTION_ID      ) & 0xFF );
+
+
+    *p++ = (unsigned char)( ( (cid_len + 1) >> 8 ) & 0xFF );
+    *p++ = (unsigned char)( ( (cid_len + 1)      ) & 0xFF );
+
+    *olen = 4;
+
+    MBEDTLS_SSL_DEBUG_MSG( 3, ( "sending CID of length %d", cid_len) );
+    *p++ = (char)cid_len;
+    *olen += 1;
+
+    memcpy( p, &cid, cid_len);
+
+    *olen += cid_len;
+}
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
+
+
+
 #if defined(MBEDTLS_SSL_SESSION_TICKETS)
 static void ssl_write_session_ticket_ext( mbedtls_ssl_context *ssl,
                                           unsigned char *buf, size_t *olen )
@@ -1093,6 +1136,11 @@ static int ssl_write_client_hello( mbedtls_ssl_context *ssl )
     ext_len += olen;
 #endif
 
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+    ssl_write_connection_id_ext( ssl, p + 2 + ext_len, &olen );
+    ext_len += olen;
+#endif
+
     /* olen unused if all extensions are disabled */
     ((void) olen);
 
@@ -1383,6 +1431,43 @@ static int ssl_parse_server_cert_ext( mbedtls_ssl_context *ssl,
     return 0;
 }
 #endif /* MBEDTLS_SSL_RAW_PUBLIC_KEY_SUPPORT */
+
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+static int ssl_parse_connection_id_ext( mbedtls_ssl_context *ssl,
+                                      const unsigned char *buf,
+                                      size_t len )
+{
+    if( len < 1 )
+    {
+        MBEDTLS_SSL_DEBUG_MSG( 1, ( "bad connection id extension" ) );
+        return( MBEDTLS_ERR_SSL_BAD_HS_SERVER_HELLO );
+    }
+
+    ssl->connection_id_length = buf[0];
+    if ((ssl->connection_id_length > 8) || (ssl->connection_id_length != (len - 1)))
+    {
+        MBEDTLS_SSL_DEBUG_MSG( 1, ( "invalid connection id length %d", ssl->connection_id_length ) );
+        return( MBEDTLS_ERR_SSL_BAD_HS_SERVER_HELLO );
+    }
+
+    memset(ssl->connection_id, 0, sizeof(ssl->connection_id));
+    memcpy(ssl->connection_id, buf + 1, ssl->connection_id_length);
+    
+    MBEDTLS_SSL_DEBUG_MSG( 4, ( 
+        "got connection id %02x%02x%02x%02x%02x%02x%02x%02x len: %d",
+        ssl->connection_id[0],
+        ssl->connection_id[1],
+        ssl->connection_id[2],
+        ssl->connection_id[3],
+        ssl->connection_id[4],
+        ssl->connection_id[5],
+        ssl->connection_id[6],
+        ssl->connection_id[7],
+        ssl->connection_id_length ) );
+
+    return 0;
+}
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
 
 #if defined(MBEDTLS_SSL_ALPN)
 static int ssl_parse_alpn_ext( mbedtls_ssl_context *ssl,
@@ -1927,7 +2012,16 @@ static int ssl_parse_server_hello( mbedtls_ssl_context *ssl )
                 return( ret );
             break;
 #endif /* MBEDTLS_SSL_RAW_PUBLIC_KEY_SUPPORT */
+#if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
+        case MBEDTLS_TLS_EXT_CONNECTION_ID:
+            MBEDTLS_SSL_DEBUG_MSG( 3, ( "found connection ID extension" ) );
 
+            ret = ssl_parse_connection_id_ext( ssl, ext + 4, ext_size );
+            if (ret != 0 )
+                return( ret );
+            break;
+
+#endif /* MBEDTLS_SSL_DTLS_CONNECTION_ID */
         default:
             MBEDTLS_SSL_DEBUG_MSG( 3, ( "unknown extension found: %d (ignoring)",
                            ext_id ) );
