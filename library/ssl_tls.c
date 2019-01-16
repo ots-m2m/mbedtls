@@ -2833,8 +2833,7 @@ int mbedtls_ssl_write_record( mbedtls_ssl_context *ssl )
         if ((ssl->out_msgtype == MBEDTLS_SSL_MSG_APPLICATION_DATA ) && 
             (ssl->connection_id_length != 0))
         {
-            static bool has_updated_cid_buffers = false;
-            if (!has_updated_cid_buffers)
+            if (!ssl->has_updated_cid_buffers)
             {
                 //make space for the connection id
                 memmove(ssl->out_msg + ssl->connection_id_length, ssl->out_msg, len);
@@ -2851,7 +2850,7 @@ int mbedtls_ssl_write_record( mbedtls_ssl_context *ssl )
                                                  ssl->transform_out->fixed_ivlen;
 
                 }
-                has_updated_cid_buffers = true;
+                ssl->has_updated_cid_buffers = true;
             }
 
             //add in the innertype to the end of the message

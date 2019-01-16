@@ -808,6 +808,7 @@ struct mbedtls_ssl_context
 #if defined(MBEDTLS_SSL_DTLS_CONNECTION_ID)
     size_t connection_id_length;
     char connection_id[8];
+    bool has_updated_cid_buffers;
 #endif
 };
 
